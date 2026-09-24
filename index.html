@@ -145,6 +145,27 @@ aside {
 .lib-item .li-edit { visibility: hidden; padding: 1px 6px; font-size: 11px; }
 .lib-item:hover .li-edit { visibility: visible; }
 .lib-empty { color: var(--text-dim); padding: 14px; text-align: center; }
+.lib-extras-head {
+  margin: 12px 8px 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+.lib-extra > summary { display: flex; align-items: center; gap: 7px; text-transform: none; letter-spacing: 0; }
+.lib-extra > summary::before { content: none; }
+.lib-extra .lib-extra-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.lib-extra input[type=checkbox] { accent-color: var(--accent); }
+.lib-extra .lib-extra-rm {
+  visibility: hidden;
+  background: transparent; border: none; color: var(--danger);
+  font-size: 14px; padding: 0 4px; cursor: pointer;
+}
+.lib-extra:hover .lib-extra-rm { visibility: visible; }
+.lib-extra.lib-off .lib-extra-name { opacity: 0.45; }
 
 /* ---------- canvas ---------- */
 #canvasWrap { flex: 1; position: relative; min-width: 0; background: var(--bg); }
@@ -337,6 +358,10 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
         <button id="btnAISearch" class="accent">AI find device</button>
         <button id="btnNewDevice">+ Custom</button>
       </div>
+      <div class="lib-actions">
+        <button id="btnLibExport" class="mini">Export library</button>
+        <button id="btnLibImport" class="mini">Import library</button>
+      </div>
     </div>
     <div id="libTree"></div>
   </aside>
@@ -472,6 +497,7 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
 </dialog>
 
 <input type="file" id="fileOpen" accept=".json" hidden>
+<input type="file" id="fileLibOpen" accept=".json" hidden>
 
 
 <script>
@@ -479,7 +505,7 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
 /* evaluation-build access gate */
 (function () {
   "use strict";
-  var LIC = {"salt": "f311c8c01539decd", "hash": "5d06abc0f34f88bb54be2dfd4600fb7c2a353c4568e40995a62af86532bbefa2", "expires": "2026-10-27"};
+  var LIC = {"salt": "1691170f37b393b1", "hash": "4858d2123acf16f9f52305c74d9c145102af1145a6bbe4884183f71f43d3ae4c", "expires": "2026-10-27"};
   function now() {
     var t = Date.now();
     try {
@@ -18760,7 +18786,8 @@ AV.SEED_DEVICES = [
 window.AV = window.AV || {};
 
 AV.state = {
-  library: [],          // device definitions
+  library: [],          // MAIN library: factory seeds + the user's own devices
+  extraLibs: [],        // additional imported libraries: { id, name, enabled, devices[] }
   project: null,        // { name, scaleMeters, nodes[], cables[] }
   settings: { apiKey: "", slack: 1.15, serviceM: 2 },
   selection: null,      // { kind:"node"|"cable", id } | null
@@ -18794,6 +18821,14 @@ AV.loadAll = function () {
     AV.saveLibrary();
   }
   try {
+    const xl = JSON.parse(localStorage.getItem("avflow_extralibs") || "null");
+    if (Array.isArray(xl)) {
+      s.extraLibs = xl.filter(l => l && typeof l === "object" && Array.isArray(l.devices))
+        .map(l => ({ id: l.id || AV.uid("lib"), name: String(l.name || "Imported"),
+                     enabled: l.enabled !== false, devices: l.devices }));
+    }
+  } catch (e) { /* keep default */ }
+  try {
     const p = JSON.parse(localStorage.getItem("avflow_project") || "null");
     if (p && Array.isArray(p.nodes)) s.project = p;
   } catch (e) { /* keep default */ }
@@ -18807,6 +18842,9 @@ AV.loadAll = function () {
 AV.saveLibrary = function () {
   try { localStorage.setItem("avflow_library", JSON.stringify(AV.state.library)); } catch (e) { console.warn(e); }
 };
+AV.saveExtraLibs = function () {
+  try { localStorage.setItem("avflow_extralibs", JSON.stringify(AV.state.extraLibs)); } catch (e) { console.warn(e); }
+};
 AV.saveProject = function () {
   try { localStorage.setItem("avflow_project", JSON.stringify(AV.state.project)); } catch (e) { console.warn(e); }
 };
@@ -18814,8 +18852,61 @@ AV.saveSettings = function () {
   try { localStorage.setItem("avflow_settings", JSON.stringify(AV.state.settings)); } catch (e) { console.warn(e); }
 };
 
+/* Resolution rank: MAIN library first, then additional libraries in order.
+   Disabled additional libraries still resolve so existing diagrams keep
+   rendering; disabling only hides them from browsing and search. */
 AV.getDevice = function (deviceId) {
-  return AV.state.library.find(d => d.id === deviceId) || null;
+  const d = AV.state.library.find(d => d.id === deviceId);
+  if (d) return d;
+  for (const lib of AV.state.extraLibs) {
+    const x = lib.devices.find(d => d.id === deviceId);
+    if (x) return x;
+  }
+  return null;
+};
+
+/* Create or refresh an additional library (never touches the main one). */
+AV.addExtraLibrary = function (name, devices) {
+  const libs = AV.state.extraLibs;
+  let lib = libs.find(l => l.name === name);
+  if (!lib) {
+    lib = { id: AV.uid("lib"), name, enabled: true, devices: [] };
+    libs.push(lib);
+  }
+  lib.devices = devices;
+  AV.saveExtraLibs();
+  if (AV.libraryUI) AV.libraryUI.render();
+  return lib;
+};
+
+AV.setExtraLibEnabled = function (libId, on) {
+  const lib = AV.state.extraLibs.find(l => l.id === libId);
+  if (!lib) return;
+  lib.enabled = !!on;
+  AV.saveExtraLibs();
+  if (AV.libraryUI) AV.libraryUI.render();
+};
+
+AV.removeExtraLibrary = function (libId) {
+  const lib = AV.state.extraLibs.find(l => l.id === libId);
+  if (!lib) return;
+  const ids = new Set(lib.devices.map(d => d.id));
+  const used = AV.state.project.nodes.filter(n => ids.has(n.deviceId) &&
+    !AV.state.library.some(d => d.id === n.deviceId));
+  if (used.length &&
+      !confirm("Devices from this library are used by " + used.length +
+        " node(s) on the canvas. Remove the library and those nodes?")) return;
+  if (used.length) {
+    AV.pushUndo();
+    const nodeIds = used.map(n => n.id);
+    const p = AV.state.project;
+    p.cables = p.cables.filter(c => !nodeIds.includes(c.from.node) && !nodeIds.includes(c.to.node));
+    p.nodes = p.nodes.filter(n => !nodeIds.includes(n.id));
+  }
+  AV.state.extraLibs = AV.state.extraLibs.filter(l => l.id !== libId);
+  AV.saveExtraLibs();
+  if (used.length) AV.afterMutate();
+  if (AV.libraryUI) AV.libraryUI.render();
 };
 AV.getNode = function (nodeId) {
   return AV.state.project.nodes.find(n => n.id === nodeId) || null;
@@ -19007,8 +19098,13 @@ AV.deleteDevice = function (deviceId) {
     p.cables = p.cables.filter(c => !ids.includes(c.from.node) && !ids.includes(c.to.node));
     p.nodes = p.nodes.filter(n => n.deviceId !== deviceId);
   }
-  AV.state.library = AV.state.library.filter(d => d.id !== deviceId);
-  AV.saveLibrary();
+  if (AV.state.library.some(d => d.id === deviceId)) {
+    AV.state.library = AV.state.library.filter(d => d.id !== deviceId);
+    AV.saveLibrary();
+  } else {
+    AV.state.extraLibs.forEach(l => { l.devices = l.devices.filter(d => d.id !== deviceId); });
+    AV.saveExtraLibs();
+  }
   if (used) AV.afterMutate();
   if (AV.libraryUI) AV.libraryUI.render();
 };
@@ -19116,7 +19212,9 @@ AV.libraryUI = (function () {
       if (!byBrand.has(b)) byBrand.set(b, []);
       byBrand.get(b).push(d);
     });
-    if (!byBrand.size) {
+    const extras = AV.state.extraLibs;
+    const anyExtraHit = extras.some(l => l.enabled && l.devices.some(d => matches(d, q)));
+    if (!byBrand.size && !anyExtraHit && !extras.length) {
       const e = document.createElement("div");
       e.className = "lib-empty";
       e.textContent = q ? "No devices match" : "Library is empty";
@@ -19137,6 +19235,53 @@ AV.libraryUI = (function () {
       byBrand.get(brand)
         .sort((a, b) => a.model.localeCompare(b.model))
         .forEach(dev => det.appendChild(renderItem(dev)));
+      tree.appendChild(det);
+    });
+
+    // additional (imported) libraries: lower rank, toggleable, removable
+    if (extras.length) {
+      const head = document.createElement("div");
+      head.className = "lib-extras-head";
+      head.textContent = "Additional libraries";
+      tree.appendChild(head);
+    }
+    extras.forEach(lib => {
+      const hits = lib.enabled ? lib.devices.filter(d => matches(d, q)) : [];
+      if (q && !hits.length) return; // hide non-matching libs while searching
+      const det = document.createElement("details");
+      det.className = "lib-cat lib-extra" + (lib.enabled ? "" : " lib-off");
+      det.open = q ? true : !!openBrands["lib:" + lib.id];
+      const sum = document.createElement("summary");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = lib.enabled;
+      cb.title = "Enable/disable this library";
+      cb.addEventListener("click", e => e.stopPropagation());
+      cb.addEventListener("change", () => AV.setExtraLibEnabled(lib.id, cb.checked));
+      const nm = document.createElement("span");
+      nm.className = "lib-extra-name";
+      nm.textContent = lib.name + " (" + lib.devices.length + ")";
+      const rm = document.createElement("button");
+      rm.className = "lib-extra-rm";
+      rm.textContent = "\u00d7";
+      rm.title = "Remove this library";
+      rm.addEventListener("click", e => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (confirm('Remove library "' + lib.name + '"?')) AV.removeExtraLibrary(lib.id);
+      });
+      sum.appendChild(cb);
+      sum.appendChild(nm);
+      sum.appendChild(rm);
+      det.appendChild(sum);
+      det.addEventListener("toggle", () => {
+        if (!q) { openBrands["lib:" + lib.id] = det.open; saveOpenBrands(); }
+      });
+      if (lib.enabled) {
+        (q ? hits : lib.devices.slice())
+          .sort((a, b) => (a.manufacturer + a.model).localeCompare(b.manufacturer + b.model))
+          .forEach(dev => det.appendChild(renderItem(dev)));
+      }
       tree.appendChild(det);
     });
   }
@@ -19338,12 +19483,85 @@ AV.libraryUI = (function () {
     deviceToForm(device);
   }
 
+  /* ---------- library export / import ---------- */
+
+  function exportLibrary() {
+    const payload = {
+      app: "avflow-library",
+      version: 1,
+      name: "My library",
+      exported: new Date().toISOString().slice(0, 10),
+      devices: AV.state.library,
+    };
+    AV.lists.download("avflow-library.json", JSON.stringify(payload, null, 2), "application/json");
+  }
+
+  // Accepts a library export, a bare device array, one device object,
+  // or research-agent output ({entries:[...]} or an array of such blocks).
+  function collectDevices(obj, out) {
+    if (Array.isArray(obj)) { obj.forEach(x => collectDevices(x, out)); return; }
+    if (!obj || typeof obj !== "object") return;
+    if (Array.isArray(obj.devices)) { out.push(...obj.devices); return; }
+    if (Array.isArray(obj.entries)) { out.push(...obj.entries); return; }
+    if (obj.id && obj.ports) out.push(obj);
+  }
+
+  function importLibraryFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      let raw;
+      try {
+        raw = JSON.parse(reader.result);
+      } catch (e) {
+        alert("Not a JSON file: " + e.message);
+        return;
+      }
+      const incoming = [];
+      collectDevices(raw, incoming);
+      if (!incoming.length) {
+        alert("No devices found in this file.");
+        return;
+      }
+      // an import becomes an ADDITIONAL library; the main library is
+      // untouchable and outranks it, so ids already in main are dropped
+      const mainIds = new Set(AV.state.library.map(d => d.id));
+      const seen = new Set();
+      const kept = [];
+      let shadowed = 0, bad = 0;
+      incoming.forEach(r => {
+        const { device } = AV.normalizeDevice(r);
+        if (!device || !device.model) { bad++; return; }
+        if (mainIds.has(device.id)) { shadowed++; return; }
+        if (seen.has(device.id)) return;
+        seen.add(device.id);
+        kept.push(device);
+      });
+      const libName = (raw && !Array.isArray(raw) && raw.name) ? String(raw.name)
+        : (file.name || "Imported").replace(/\.json$/i, "").replace(/\.avflow$/i, "");
+      if (!kept.length) {
+        alert("Nothing to import: all " + shadowed + " device(s) already exist in My library.");
+        return;
+      }
+      AV.addExtraLibrary(libName, kept);
+      alert('Imported library "' + libName + '": ' + kept.length + " device(s)" +
+        (shadowed ? "; " + shadowed + " skipped (already in My library)" : "") +
+        (bad ? "; " + bad + " invalid" : "") + ".");
+    };
+    reader.readAsText(file);
+  }
+
   function init() {
     tree = $("libTree");
     search = $("libSearch");
     search.addEventListener("input", render);
     fillCategorySelect();
     $("btnNewDevice").addEventListener("click", () => openEditor(null));
+    $("btnLibExport").addEventListener("click", exportLibrary);
+    $("btnLibImport").addEventListener("click", () => $("fileLibOpen").click());
+    $("fileLibOpen").addEventListener("change", e => {
+      if (e.target.files[0]) importLibraryFile(e.target.files[0]);
+      e.target.value = "";
+    });
     $("btnAddPort").addEventListener("click", () =>
       $("devPorts").appendChild(portRow({ dir: "in", label: "", connector: "HDMI-A", standard: "", signal: "video", count: 1 })));
     $("btnDevSave").addEventListener("click", saveEditor);
@@ -19357,7 +19575,7 @@ AV.libraryUI = (function () {
     render();
   }
 
-  return { init, render, openEditor };
+  return { init, render, openEditor, importLibraryFile };
 })();
 
 
@@ -19731,6 +19949,8 @@ AV.canvas = (function () {
         return;
       }
       beginWire(nodeId, portId, dot.getAttribute("data-dir"));
+      lastClient = { x: e.clientX, y: e.clientY };
+      startEdgePan();
       try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
       return;
     }
@@ -19759,6 +19979,8 @@ AV.canvas = (function () {
         snapshot: JSON.stringify(AV.state.project),
       };
       AV.state.selection = { kind: "node", id };
+      lastClient = { x: e.clientX, y: e.clientY };
+      startEdgePan();
       try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
       AV.afterMutate();
       return;
@@ -19781,6 +20003,8 @@ AV.canvas = (function () {
         moved: false,
         snapshot: JSON.stringify(AV.state.project),
       };
+      lastClient = { x: e.clientX, y: e.clientY };
+      startEdgePan();
       try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
       AV.afterMutate();
       return;
@@ -19790,16 +20014,13 @@ AV.canvas = (function () {
     try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
   }
 
-  function onPointerMove(e) {
-    trackHover(e);
+  /* Apply the active drag (node/resize/wire) at the given client point.
+     Shared by pointermove and the edge auto-pan loop, which moves the view
+     under a stationary pointer. */
+  function applyDragAt(cx, cy) {
     if (!mode) return;
-    if (mode.type === "pan") {
-      const dx = e.clientX - mode.startX, dy = e.clientY - mode.startY;
-      if (Math.abs(dx) + Math.abs(dy) > 3) mode.moved = true;
-      panX = mode.panX0 + dx; panY = mode.panY0 + dy;
-      applyView();
-    } else if (mode.type === "node") {
-      const w = clientToWorld(e.clientX, e.clientY);
+    if (mode.type === "node") {
+      const w = clientToWorld(cx, cy);
       const node = AV.getNode(mode.id);
       if (!node) return;
       const nx = Math.round((w.x - mode.offX) / 10) * 10;
@@ -19812,7 +20033,7 @@ AV.canvas = (function () {
     } else if (mode.type === "resize") {
       const node = AV.getNode(mode.id);
       if (!node) return;
-      const w = clientToWorld(e.clientX, e.clientY);
+      const w = clientToWorld(cx, cy);
       const s = node.scale || 1;
       const newW = Math.round(Math.min(MAX_W, Math.max(MIN_W, (w.x - node.x) / s)) / 10) * 10;
       const targetH = (w.y - node.y) / s;
@@ -19829,12 +20050,61 @@ AV.canvas = (function () {
         render();
       }
     } else if (mode.type === "wire") {
-      const w = clientToWorld(e.clientX, e.clientY);
+      const w = clientToWorld(cx, cy);
       mode.preview.setAttribute("d",
         mode.dir === "out"
           ? wirePath(mode.start, w, mode.startExit, w.x > mode.start.x ? -1 : 1)
           : wirePath(w, mode.start, w.x < mode.start.x ? 1 : -1, mode.startExit));
     }
+  }
+
+  /* Edge auto-pan: while dragging a wire/node/resize, holding the pointer
+     within EDGE_ZONE px of the canvas border (or beyond it) scrolls the view
+     toward that edge; speed grows with depth. Never active outside a drag,
+     so plain mouse movement can't scroll anything by accident. */
+  const EDGE_ZONE = 32, EDGE_MAX = 16;
+  let lastClient = null;
+  let panRAF = 0;
+
+  function edgePanTick() {
+    panRAF = 0;
+    if (!mode || mode.type === "pan" || !lastClient) return;
+    const r = svg.getBoundingClientRect();
+    const sp = d => Math.min(EDGE_MAX, 2 + d * 0.35);
+    let vx = 0, vy = 0;
+    if (lastClient.x < r.left + EDGE_ZONE) vx = -sp(r.left + EDGE_ZONE - lastClient.x);
+    else if (lastClient.x > r.right - EDGE_ZONE) vx = sp(lastClient.x - (r.right - EDGE_ZONE));
+    if (lastClient.y < r.top + EDGE_ZONE) vy = -sp(r.top + EDGE_ZONE - lastClient.y);
+    else if (lastClient.y > r.bottom - EDGE_ZONE) vy = sp(lastClient.y - (r.bottom - EDGE_ZONE));
+    if (vx || vy) {
+      panX -= vx;
+      panY -= vy;
+      applyView();
+      applyDragAt(lastClient.x, lastClient.y);
+    }
+    panRAF = requestAnimationFrame(edgePanTick);
+  }
+
+  function startEdgePan() {
+    if (!panRAF) panRAF = requestAnimationFrame(edgePanTick);
+  }
+  function stopEdgePan() {
+    if (panRAF) { cancelAnimationFrame(panRAF); panRAF = 0; }
+    lastClient = null;
+  }
+
+  function onPointerMove(e) {
+    trackHover(e);
+    if (!mode) return;
+    if (mode.type === "pan") {
+      const dx = e.clientX - mode.startX, dy = e.clientY - mode.startY;
+      if (Math.abs(dx) + Math.abs(dy) > 3) mode.moved = true;
+      panX = mode.panX0 + dx; panY = mode.panY0 + dy;
+      applyView();
+      return;
+    }
+    lastClient = { x: e.clientX, y: e.clientY };
+    applyDragAt(e.clientX, e.clientY);
   }
 
   function commitDragUndo() {
@@ -19846,6 +20116,7 @@ AV.canvas = (function () {
   }
 
   function onPointerUp(e) {
+    stopEdgePan();
     if (!mode) return;
     if (mode.type === "pan") {
       if (!mode.moved) { AV.state.selection = null; AV.afterMutate(); }
@@ -19880,6 +20151,7 @@ AV.canvas = (function () {
       panX -= e.deltaX;
       panY -= e.deltaY;
       applyView();
+      if (mode && mode.type !== "pan" && lastClient) applyDragAt(lastClient.x, lastClient.y);
     }
   }
 
@@ -19924,7 +20196,7 @@ AV.canvas = (function () {
       if (sel.kind === "node") AV.deleteNode(sel.id);
       else AV.deleteCable(sel.id);
     } else if (e.key === "Escape") {
-      if (mode && mode.type === "wire") endWire(null);
+      if (mode && mode.type === "wire") { stopEdgePan(); endWire(null); }
       else { AV.state.selection = null; AV.afterMutate(); }
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
@@ -20775,11 +21047,12 @@ window.AV = window.AV || {};
       try {
         const payload = JSON.parse(reader.result);
         if (payload.app !== "avflow" || !payload.project) throw new Error("not an AVFlow project file");
-        // merge embedded devices that are missing locally
-        (payload.devices || []).forEach(d => {
-          if (!AV.getDevice(d.id)) AV.state.library.push(d);
-        });
-        AV.saveLibrary();
+        // embedded devices missing locally go to an additional library
+        // (the main library is never modified by imports)
+        const missing = (payload.devices || []).filter(d => !AV.getDevice(d.id));
+        if (missing.length) {
+          AV.addExtraLibrary("Project " + (payload.project.name || "import"), missing);
+        }
         AV.pushUndo();
         AV.state.project = payload.project;
         AV.state.selection = null;
