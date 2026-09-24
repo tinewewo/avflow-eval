@@ -96,7 +96,16 @@ aside {
   flex-direction: column;
   min-height: 0;
 }
-#library { width: 250px; border-right: 1px solid var(--border); }
+#library { width: 250px; min-width: 180px; max-width: 520px; }
+#inspector { min-width: 200px; max-width: 520px; }
+#libResizer, #inspResizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.15s;
+}
+#libResizer:hover, #libResizer.dragging,
+#inspResizer:hover, #inspResizer.dragging { background: var(--accent); }
 #inspector { width: 260px; border-left: 1px solid var(--border); }
 
 /* ---------- library ---------- */
@@ -171,6 +180,9 @@ aside {
 .node .dims { fill: rgba(255,255,255,0.4); font-size: 9.5px; font-family: var(--mono); }
 .node .port-label { fill: var(--text); font-size: 10px; cursor: text; }
 .resize-grip { cursor: nwse-resize; }
+.flip-btn { cursor: pointer; }
+.flip-btn .flip-glyph { fill: rgba(255,255,255,0.75); font-size: 12px; }
+.flip-btn:hover .flip-glyph { fill: #fff; }
 .grip-lines { stroke: rgba(255,255,255,0.28); stroke-width: 1.5; fill: none; }
 .port-dot { stroke: #0e1013; stroke-width: 1.4; cursor: crosshair; }
 .port-dot.hl { stroke: #fff; stroke-width: 2; }
@@ -298,6 +310,7 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
     <button id="btnNew" title="New project">New</button>
     <button id="btnOpen" title="Open project JSON">Open</button>
     <button id="btnSave" title="Download project JSON">Save</button>
+    <button id="btnPNG" title="Export the diagram as a PNG image">PNG</button>
   </div>
   <div class="tb-group">
     <button id="btnUndo" title="Undo (Cmd+Z)">&#8630;</button>
@@ -327,6 +340,7 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
     </div>
     <div id="libTree"></div>
   </aside>
+  <div id="libResizer" title="Drag to resize the library"></div>
 
   <div id="canvasWrap">
     <svg id="canvas" tabindex="0">
@@ -351,6 +365,7 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
     <input id="portRename" hidden spellcheck="false">
   </div>
 
+  <div id="inspResizer" title="Drag to resize the inspector"></div>
   <aside id="inspector">
     <div class="insp-title">Inspector</div>
     <div id="inspBody"><div class="insp-empty">Nothing selected</div></div>
@@ -464,7 +479,7 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
 /* evaluation-build access gate */
 (function () {
   "use strict";
-  var LIC = {"salt": "d6c707bac37b35f0", "hash": "f5837fe1277f5a088ee11dc7b4cbc449fbde50b37ec466f8a0916cdca329330b", "expires": "2026-09-27"};
+  var LIC = {"salt": "f311c8c01539decd", "hash": "5d06abc0f34f88bb54be2dfd4600fb7c2a353c4568e40995a62af86532bbefa2", "expires": "2026-10-27"};
   function now() {
     var t = Date.now();
     try {
@@ -651,7 +666,7 @@ AV.CONNECTORS = [
 
 AV.CATEGORIES = [
   "Video Processing", "Video Switching", "Cameras", "LED", "Audio",
-  "Converters", "Network", "Power", "Playback", "Displays", "Other",
+  "Converters", "Network", "Power", "Playback", "Displays", "Cabling", "Other",
 ];
 
 AV.CATEGORY_COLORS = {
@@ -665,6 +680,7 @@ AV.CATEGORY_COLORS = {
   "Power":            "#c9403f",
   "Playback":         "#c98a2f",
   "Displays":         "#5a7d9e",
+  "Cabling":          "#4a8a7b",
   "Other":            "#5f6672",
 };
 
@@ -955,7 +971,7 @@ AV.cardsSummary = function (device, cardsSel) {
 "use strict";
 window.AV = window.AV || {};
 
-AV.SEED_REV = 5;
+AV.SEED_REV = 8;
 
 AV.SEED_DEVICES = [
   {
@@ -15967,7 +15983,7 @@ AV.SEED_DEVICES = [
       "ru": 0,
       "weight_kg": 0.21,
       "power_w": 2,
-      "power_connector": "DC jack, +12V universal PSU included (operates 6-36V DC, cab"
+      "power_connector": "DC jack, +12V (6-36V), universal PSU included"
     },
     "ports": [
       {
@@ -15990,12 +16006,12 @@ AV.SEED_DEVICES = [
       },
       {
         "dir": "in",
-        "label": "OPTICAL OUT/IN",
+        "label": "OPTICAL IN",
         "connector": "SFP+",
         "standard": "12G-SDI optical (SMPTE 297M)",
         "signal": "video",
         "count": 1,
-        "notes": "Single bidirectional SFP cage (simultaneous in and out, different standards allowed each direction); accepts standard 3G/6G/12G-SDI SFP modules, sold separately, typically LC duplex fiber"
+        "notes": "Receive fiber of the duplex LC SFP module (sold separately); accepts 3G/6G/12G-SDI optical, feeds the SDI output"
       },
       {
         "dir": "in",
@@ -16005,6 +16021,15 @@ AV.SEED_DEVICES = [
         "signal": "power",
         "count": 1,
         "notes": "DC inlet; universal power supply included"
+      },
+      {
+        "dir": "out",
+        "label": "OPTICAL OUT",
+        "connector": "SFP+",
+        "standard": "12G-SDI optical (SMPTE 297M)",
+        "signal": "video",
+        "count": 1,
+        "notes": "Transmit fiber of the duplex LC SFP module; carries the SDI input converted to optical (independent of the receive direction)"
       }
     ],
     "notes": "Bidirectional SDI-to-fiber and fiber-to-SDI converter in one tiny unit, extending 12G-SDI runs up to about 10 miles over standard single-mode fiber. Remember to budget for the SDI SFP optical module and fiber patch cables, which are not included, and one converter is needed at each end of the link. No user controls or USB; it auto-detects SD, HD and Ultra HD formats up to 2160p60 and also passes ASI.",
@@ -18240,6 +18265,492 @@ AV.SEED_DEVICES = [
       "https://www.blackmagicdesign.com/products/blackmagicstreamingprocessors/techspecs/W-WPR-07",
       "https://www.blackmagicdesign.com/products/blackmagicstreamingprocessors/techspecs"
     ]
+  },
+  {
+    "id": "generic-fiber-trunk-2c",
+    "manufacturer": "Generic",
+    "model": "Fiber trunk 2-core LC",
+    "category": "Cabling",
+    "tags": [
+      "fiber",
+      "trunk",
+      "multicore",
+      "lc",
+      "optical"
+    ],
+    "physical": {
+      "width_mm": 0,
+      "depth_mm": 0,
+      "height_mm": 0,
+      "ru": 0,
+      "weight_kg": 0,
+      "power_w": 0,
+      "power_connector": ""
+    },
+    "ports": [
+      {
+        "dir": "in",
+        "label": "A CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 2,
+        "notes": "Side A; passive pass-through to the same core on side B"
+      },
+      {
+        "dir": "out",
+        "label": "B CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 2,
+        "notes": "Side B; passive pass-through of the same core on side A"
+      }
+    ],
+    "notes": "Passive 2-core optical trunk cable, LC-LC. Each core is one fiber; a duplex link (e.g. 10G SFP+) occupies 2 cores. Set the run length on the connections in the inspector.",
+    "sources": []
+  },
+  {
+    "id": "generic-fiber-trunk-4c",
+    "manufacturer": "Generic",
+    "model": "Fiber trunk 4-core LC",
+    "category": "Cabling",
+    "tags": [
+      "fiber",
+      "trunk",
+      "multicore",
+      "lc",
+      "optical"
+    ],
+    "physical": {
+      "width_mm": 0,
+      "depth_mm": 0,
+      "height_mm": 0,
+      "ru": 0,
+      "weight_kg": 0,
+      "power_w": 0,
+      "power_connector": ""
+    },
+    "ports": [
+      {
+        "dir": "in",
+        "label": "A CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 4,
+        "notes": "Side A; passive pass-through to the same core on side B"
+      },
+      {
+        "dir": "out",
+        "label": "B CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 4,
+        "notes": "Side B; passive pass-through of the same core on side A"
+      }
+    ],
+    "notes": "Passive 4-core optical trunk cable, LC-LC. Each core is one fiber; a duplex link (e.g. 10G SFP+) occupies 2 cores. Set the run length on the connections in the inspector.",
+    "sources": []
+  },
+  {
+    "id": "generic-fiber-trunk-8c",
+    "manufacturer": "Generic",
+    "model": "Fiber trunk 8-core LC",
+    "category": "Cabling",
+    "tags": [
+      "fiber",
+      "trunk",
+      "multicore",
+      "lc",
+      "optical"
+    ],
+    "physical": {
+      "width_mm": 0,
+      "depth_mm": 0,
+      "height_mm": 0,
+      "ru": 0,
+      "weight_kg": 0,
+      "power_w": 0,
+      "power_connector": ""
+    },
+    "ports": [
+      {
+        "dir": "in",
+        "label": "A CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 8,
+        "notes": "Side A; passive pass-through to the same core on side B"
+      },
+      {
+        "dir": "out",
+        "label": "B CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 8,
+        "notes": "Side B; passive pass-through of the same core on side A"
+      }
+    ],
+    "notes": "Passive 8-core optical trunk cable, LC-LC. Each core is one fiber; a duplex link (e.g. 10G SFP+) occupies 2 cores. Set the run length on the connections in the inspector.",
+    "sources": []
+  },
+  {
+    "id": "generic-fiber-trunk-12c",
+    "manufacturer": "Generic",
+    "model": "Fiber trunk 12-core LC",
+    "category": "Cabling",
+    "tags": [
+      "fiber",
+      "trunk",
+      "multicore",
+      "lc",
+      "optical"
+    ],
+    "physical": {
+      "width_mm": 0,
+      "depth_mm": 0,
+      "height_mm": 0,
+      "ru": 0,
+      "weight_kg": 0,
+      "power_w": 0,
+      "power_connector": ""
+    },
+    "ports": [
+      {
+        "dir": "in",
+        "label": "A CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 12,
+        "notes": "Side A; passive pass-through to the same core on side B"
+      },
+      {
+        "dir": "out",
+        "label": "B CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 12,
+        "notes": "Side B; passive pass-through of the same core on side A"
+      }
+    ],
+    "notes": "Passive 12-core optical trunk cable, LC-LC. Each core is one fiber; a duplex link (e.g. 10G SFP+) occupies 2 cores. Set the run length on the connections in the inspector.",
+    "sources": []
+  },
+  {
+    "id": "generic-fiber-trunk-24c",
+    "manufacturer": "Generic",
+    "model": "Fiber trunk 24-core LC",
+    "category": "Cabling",
+    "tags": [
+      "fiber",
+      "trunk",
+      "multicore",
+      "lc",
+      "optical"
+    ],
+    "physical": {
+      "width_mm": 0,
+      "depth_mm": 0,
+      "height_mm": 0,
+      "ru": 0,
+      "weight_kg": 0,
+      "power_w": 0,
+      "power_connector": ""
+    },
+    "ports": [
+      {
+        "dir": "in",
+        "label": "A CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 24,
+        "notes": "Side A; passive pass-through to the same core on side B"
+      },
+      {
+        "dir": "out",
+        "label": "B CORE",
+        "connector": "LC-fiber",
+        "standard": "OS2 single-mode",
+        "signal": "data",
+        "alt": [
+          "video",
+          "network"
+        ],
+        "count": 24,
+        "notes": "Side B; passive pass-through of the same core on side A"
+      }
+    ],
+    "notes": "Passive 24-core optical trunk cable, LC-LC. Each core is one fiber; a duplex link (e.g. 10G SFP+) occupies 2 cores. Set the run length on the connections in the inspector.",
+    "sources": []
+  },
+  {
+    "id": "novastar-cvt4k-s",
+    "manufacturer": "Novastar",
+    "model": "CVT4K-S",
+    "category": "Converters",
+    "tags": [
+      "fiber",
+      "converter",
+      "led",
+      "optical",
+      "single-mode",
+      "ethercon",
+      "10g",
+      "redundant"
+    ],
+    "physical": {
+      "width_mm": 482.6,
+      "depth_mm": 377,
+      "height_mm": 96,
+      "ru": 2,
+      "weight_kg": 4.6,
+      "power_w": 21,
+      "power_connector": "IEC + powerCON (dual redundant inlets)"
+    },
+    "ports": [
+      {
+        "dir": "in",
+        "label": "OPT",
+        "connector": "SFP+",
+        "standard": "10G",
+        "signal": "video",
+        "count": 4,
+        "notes": "OPT 1/2 are main, OPT 3/4 are their backups; OPT 1 carries Ethernet ports 1-8, OPT 2 carries 9-16. Factory-installed hot-pluggable 9.95-11.3 Gbit/s modules, 1310 nm, duplex LC connection, single-mode twin-core OS1/OS2 (9/125 um), up to 10 km. Bidirectional (data in or out); modeled here as receive end of the fiber link."
+      },
+      {
+        "dir": "out",
+        "label": "ETHERNET",
+        "connector": "etherCON",
+        "standard": "1G Ethernet",
+        "signal": "video",
+        "count": 16,
+        "notes": "16x Neutrik Gigabit Ethernet ports for LED data, input or output (bidirectional); modeled as outputs toward panels on the receive end."
+      },
+      {
+        "dir": "in",
+        "label": "CONTROL",
+        "connector": "RJ45",
+        "standard": "Ethernet",
+        "signal": "control",
+        "count": 1,
+        "notes": "Rear-panel marking ETHERNET; control computer connection only, not LED data.",
+        "alt": [
+          "network"
+        ]
+      },
+      {
+        "dir": "in",
+        "label": "USB",
+        "connector": "USB-B",
+        "standard": "USB",
+        "signal": "control",
+        "count": 1,
+        "notes": "Control computer connection; not for cascading."
+      },
+      {
+        "dir": "in",
+        "label": "AC IN",
+        "connector": "IEC",
+        "standard": "100-240 V AC 50/60 Hz",
+        "signal": "power",
+        "count": 1,
+        "notes": "3-pin power socket; one of two inlets feeding dual redundant internal power supplies (1.6 A max)."
+      },
+      {
+        "dir": "in",
+        "label": "AC IN",
+        "connector": "powerCON",
+        "standard": "100-240 V AC 50/60 Hz",
+        "signal": "power",
+        "count": 1,
+        "notes": "Second redundant inlet; powerCON must not be plugged in hot."
+      }
+    ],
+    "notes": "Single-mode fiber converter for LED data: bridges 16 Gigabit etherCON links over two main plus two backup 10G LC fiber pairs, up to 10 km on OS1/OS2 single-mode. Fully bidirectional - use one unit at the screen end with a fiber-equipped controller, or a pair back-to-back (Ethernet in / fiber out at the controller side, reversed at the screen side); ports here are modeled for the receive end. Dual redundant power supplies with separate IEC and powerCON inlets; a multi-mode sister model CVT4K-M exists for short runs (approx. 300 m). Operating range -20 to +60 C.",
+    "sources": [
+      "https://oss.novastar.tech/uploads/2024/10/CVT4K-S-Fiber-Converter-Specifications-V1.0.6.pdf",
+      "https://oss.novastar.tech/uploads/2021/09/CVT4K-M-Fiber-Converter-Specifications-V1.0.3.pdf"
+    ]
+  },
+  {
+    "id": "novastar-cvt10-pro",
+    "manufacturer": "Novastar",
+    "model": "CVT10 Pro",
+    "category": "Converters",
+    "tags": [
+      "fiber",
+      "converter",
+      "led",
+      "optical",
+      "opticalcon",
+      "ethercon",
+      "10g",
+      "touring"
+    ],
+    "physical": {
+      "width_mm": 482.6,
+      "depth_mm": 280,
+      "height_mm": 88.1,
+      "ru": 2,
+      "weight_kg": 5.9,
+      "power_w": 22,
+      "power_connector": "powerCON"
+    },
+    "ports": [
+      {
+        "dir": "in",
+        "label": "OPT",
+        "connector": "opticalCON",
+        "standard": "10G",
+        "signal": "video",
+        "count": 2,
+        "notes": "Neutrik opticalCON DUO chassis (duplex LC inside); OPT 1 primary, OPT 2 backup. Hot-swappable pre-installed 9.95-11.3 Gbit/s modules. Pro-S: single-mode OS1/OS2, 1310 nm, up to 10 km; Pro-M: multi-mode OM3/OM4 (50/125 um), 850 nm, up to 300 m. Bidirectional; modeled as receive end."
+      },
+      {
+        "dir": "out",
+        "label": "ETHERNET",
+        "connector": "etherCON",
+        "standard": "1G Ethernet",
+        "signal": "video",
+        "count": 10,
+        "notes": "10x Neutrik etherCON Gigabit LED-data ports with sealing covers, bidirectional. In fiber-in mode only ports 1-8 are usable with 8b/10b-encoded 10G front-end optics; all 10 work with 10.3125G (64b/66b) devices such as MX40 Pro, and all 10 in Ethernet-in mode."
+      },
+      {
+        "dir": "in",
+        "label": "USB",
+        "connector": "USB-B",
+        "standard": "USB",
+        "signal": "control",
+        "count": 1,
+        "notes": "Control computer connection (NovaLCT V5.4.0+, firmware upgrade); not for cascading."
+      },
+      {
+        "dir": "in",
+        "label": "AC IN",
+        "connector": "powerCON",
+        "standard": "100-240 V AC 50/60 Hz",
+        "signal": "power",
+        "count": 1,
+        "notes": "Single inlet, 1.5 A max; no redundant power. Must not be plugged in hot."
+      }
+    ],
+    "notes": "Touring-grade dustproof/waterproof (reseller-listed IP65) fiber converter with locking Neutrik connectors throughout, rack-mountable or truss-hung via M10 clamp bolts. Converts between two 10G opticalCON DUO fiber ports (OPT 1 primary, OPT 2 auto-backup) and ten Gigabit etherCON ports; bidirectional, modeled here as the receive end (fiber in from controller, Ethernet out to panels) - use a pair back-to-back when the controller has no fiber output. Order as CVT10 Pro-S (single-mode, 10 km) or Pro-M (multi-mode, 300 m); single powerCON inlet with no PSU redundancy.",
+    "sources": [
+      "https://oss.novastar.tech/uploads/2024/10/CVT10-Pro-Fiber-Converter-Specifications-V1.1.0.pdf",
+      "https://www.novastar.tech/products/accessories/cvt10-pro/",
+      "https://dvsledsystems.com/product/novastar-cvt10-s-pro/"
+    ]
+  },
+  {
+    "id": "novastar-cvt10",
+    "manufacturer": "Novastar",
+    "model": "CVT10",
+    "category": "Converters",
+    "tags": [
+      "fiber",
+      "converter",
+      "led",
+      "optical",
+      "sfp",
+      "10g",
+      "half-rack",
+      "budget"
+    ],
+    "physical": {
+      "width_mm": 254.3,
+      "depth_mm": 290,
+      "height_mm": 50.6,
+      "ru": 1,
+      "weight_kg": 2.1,
+      "power_w": 18,
+      "power_connector": "powerCON"
+    },
+    "ports": [
+      {
+        "dir": "in",
+        "label": "OPT",
+        "connector": "SFP+",
+        "standard": "10G",
+        "signal": "video",
+        "count": 2,
+        "notes": "OPT 1 master, OPT 2 backup; hot-swappable factory-installed 9.95-11.3 Gbit/s modules, duplex LC connection. CVT10-S: single-mode OS1/OS2, 1310 nm, up to 10 km; CVT10-M: multi-mode OM3/OM4 (50/125 um), 850 nm, up to 300 m. Bidirectional; modeled as receive end."
+      },
+      {
+        "dir": "out",
+        "label": "ETHERNET",
+        "connector": "RJ45",
+        "standard": "1G Ethernet",
+        "signal": "video",
+        "count": 10,
+        "notes": "Plain RJ45 Gigabit LED-data ports (not etherCON), bidirectional. In fiber-in mode only ports 1-8 are usable with 8b/10b-encoded 10G front-end optics; all 10 with 10.3125G (64b/66b) devices, and all 10 in Ethernet-in mode."
+      },
+      {
+        "dir": "in",
+        "label": "USB",
+        "connector": "USB-B",
+        "standard": "USB",
+        "signal": "control",
+        "count": 1,
+        "notes": "Front-panel control port (NovaLCT V5.4.0+, firmware upgrade); not for cascading."
+      },
+      {
+        "dir": "in",
+        "label": "AC IN",
+        "connector": "powerCON",
+        "standard": "100-240 V AC 50/60 Hz",
+        "signal": "power",
+        "count": 1,
+        "notes": "Single inlet, 0.6 A max, with rocker power switch; no redundant power. Must not be plugged in hot."
+      }
+    ],
+    "notes": "Cost-effective half-rack-width fiber converter: two hot-swappable 10G SFP+ optical ports (OPT 1 master, OPT 2 backup, duplex LC) to ten Gigabit RJ45 ports; two units, or one unit plus the included connecting piece, assemble into a 1U 19-inch rack row, and it can also be truss-hung. Bidirectional and modeled here as the receive end - deploy a pair when the controller lacks fiber outputs. Choose CVT10-S (single-mode, 10 km) or CVT10-M (multi-mode, 300 m); indoor-style housing without the CVT10 Pro's sealing or Neutrik connectors.",
+    "sources": [
+      "https://oss.novastar.tech/uploads/2025/10/CVT10-Fiber-Converter-Specifications-V1.3.5.pdf",
+      "https://www.novastar.tech/products/accessories/cvt10/"
+    ]
   }
 ];
 
@@ -18589,32 +19100,42 @@ AV.libraryUI = (function () {
     return q.toLowerCase().split(/\s+/).every(w => hay.includes(w));
   }
 
+  let openBrands = {};
+  try { openBrands = JSON.parse(localStorage.getItem("avflow_lib_open") || "{}") || {}; } catch (e) { /* default */ }
+  function saveOpenBrands() {
+    try { localStorage.setItem("avflow_lib_open", JSON.stringify(openBrands)); } catch (e) { /* best effort */ }
+  }
+
   function render() {
     if (!tree) return;
     const q = search.value.trim();
     tree.textContent = "";
-    const byCat = new Map();
+    const byBrand = new Map();
     AV.state.library.filter(d => matches(d, q)).forEach(d => {
-      if (!byCat.has(d.category)) byCat.set(d.category, []);
-      byCat.get(d.category).push(d);
+      const b = d.manufacturer || "Other";
+      if (!byBrand.has(b)) byBrand.set(b, []);
+      byBrand.get(b).push(d);
     });
-    if (!byCat.size) {
+    if (!byBrand.size) {
       const e = document.createElement("div");
       e.className = "lib-empty";
       e.textContent = q ? "No devices match" : "Library is empty";
       tree.appendChild(e);
       return;
     }
-    const cats = [...byCat.keys()].sort((a, b) => AV.CATEGORIES.indexOf(a) - AV.CATEGORIES.indexOf(b));
-    cats.forEach(cat => {
+    const brands = [...byBrand.keys()].sort((a, b) => a.localeCompare(b));
+    brands.forEach(brand => {
       const det = document.createElement("details");
       det.className = "lib-cat";
-      det.open = true;
+      det.open = q ? true : !!openBrands[brand];
       const sum = document.createElement("summary");
-      sum.textContent = cat + " (" + byCat.get(cat).length + ")";
+      sum.textContent = brand + " (" + byBrand.get(brand).length + ")";
       det.appendChild(sum);
-      byCat.get(cat)
-        .sort((a, b) => (a.manufacturer + a.model).localeCompare(b.manufacturer + b.model))
+      det.addEventListener("toggle", () => {
+        if (!q) { openBrands[brand] = det.open; saveOpenBrands(); }
+      });
+      byBrand.get(brand)
+        .sort((a, b) => a.model.localeCompare(b.model))
         .forEach(dev => det.appendChild(renderItem(dev)));
       tree.appendChild(det);
     });
@@ -18636,7 +19157,7 @@ AV.libraryUI = (function () {
     const sub = document.createElement("div");
     sub.className = "li-sub";
     const ex = AV.expandPorts(dev);
-    sub.textContent = dev.manufacturer + " · " + ex.in.length + " in / " + ex.out.length + " out";
+    sub.textContent = dev.category + " · " + ex.in.length + " in / " + ex.out.length + " out";
     name.appendChild(model);
     name.appendChild(sub);
     const edit = document.createElement("button");
@@ -18891,12 +19412,13 @@ AV.canvas = (function () {
     return HEAD_H + PAD_TOP + rows * rowH(node) + FOOT_H + 4;
   }
 
-  // port position in node-local (unscaled) coords
+  // port position in node-local (unscaled) coords (flip swaps the sides)
   function portLocalPos(node, dev, portId) {
     const ex = AV.expandPorts(dev);
-    let list = ex.in, x = 0;
+    const flip = !!node.flip;
+    let list = ex.in, x = flip ? nodeW(node) : 0;
     let i = list.findIndex(p => p.id === portId);
-    if (i < 0) { list = ex.out; x = nodeW(node); i = list.findIndex(p => p.id === portId); }
+    if (i < 0) { list = ex.out; x = flip ? 0 : nodeW(node); i = list.findIndex(p => p.id === portId); }
     if (i < 0) return null;
     return { x, y: HEAD_H + PAD_TOP + i * rowH(node) + rowH(node) / 2 };
   }
@@ -18924,10 +19446,13 @@ AV.canvas = (function () {
 
   /* ---------- rendering ---------- */
 
-  function wirePath(a, b) {
+  // sa/sb: horizontal exit direction of each endpoint (+1 right, -1 left)
+  function wirePath(a, b, sa, sb) {
+    if (sa === undefined) sa = 1;
+    if (sb === undefined) sb = -1;
     const dx = Math.max(40, Math.abs(b.x - a.x) * 0.45);
     return "M " + a.x + " " + a.y +
-      " C " + (a.x + dx) + " " + a.y + ", " + (b.x - dx) + " " + b.y + ", " + b.x + " " + b.y;
+      " C " + (a.x + dx * sa) + " " + a.y + ", " + (b.x + dx * sb) + " " + b.y + ", " + b.x + " " + b.y;
   }
 
   function renderNode(node) {
@@ -18950,38 +19475,38 @@ AV.canvas = (function () {
     el("rect", { width: W, height: 12, y: HEAD_H - 12, fill: color }, g);
 
     const title = el("text", { "class": "title", x: 10, y: 18 }, g);
-    title.textContent = (AV.nodeModified(node) ? "Δ " : "") + truncate(node.label || dev.model, Math.floor(W / 8.5));
+    title.textContent = (AV.nodeModified(node) ? "Δ " : "") + truncate(node.label || dev.model, Math.floor((W - 32) / 8.5));
     const sub = el("text", { "class": "subtitle", x: 10, y: 33 }, g);
     sub.textContent = truncate(dev.manufacturer + " " + dev.model, Math.floor(W / 6.2));
 
     const maxChars = Math.floor((W / 2 - 16) / 5.8);
+    const flip = !!node.flip;
     const ex = AV.expandPorts(dev);
-    ex.in.forEach((p, i) => {
+    const portRow = (p, i, isIn) => {
       const y = HEAD_H + PAD_TOP + i * RH + RH / 2;
+      const onLeft = isIn !== flip; // inputs left normally, right when flipped
       el("circle", {
-        "class": "port-dot", cx: 0, cy: y, r: 5,
+        "class": "port-dot", cx: onLeft ? 0 : W, cy: y, r: 5,
         fill: AV.SIGNALS[p.signal].color,
-        "data-node": node.id, "data-port": p.id, "data-dir": "in",
+        "data-node": node.id, "data-port": p.id, "data-dir": isIn ? "in" : "out",
       }, g);
       const t = el("text", {
-        "class": "port-label", x: 10, y: y + 3.5,
+        "class": "port-label", x: onLeft ? 10 : W - 10, y: y + 3.5,
+        "text-anchor": onLeft ? "start" : "end",
         "data-node": node.id, "data-port": p.id,
       }, g);
       t.textContent = truncate(AV.portName(node, p), maxChars);
-    });
-    ex.out.forEach((p, i) => {
-      const y = HEAD_H + PAD_TOP + i * RH + RH / 2;
-      el("circle", {
-        "class": "port-dot", cx: W, cy: y, r: 5,
-        fill: AV.SIGNALS[p.signal].color,
-        "data-node": node.id, "data-port": p.id, "data-dir": "out",
-      }, g);
-      const t = el("text", {
-        "class": "port-label", x: W - 10, y: y + 3.5, "text-anchor": "end",
-        "data-node": node.id, "data-port": p.id,
-      }, g);
-      t.textContent = truncate(AV.portName(node, p), maxChars);
-    });
+    };
+    ex.in.forEach((p, i) => portRow(p, i, true));
+    ex.out.forEach((p, i) => portRow(p, i, false));
+
+    // header toggle: swap the input/output sides of this node
+    const fb = el("g", { "class": "flip-btn", "data-id": node.id }, g);
+    el("rect", { x: W - 26, y: 4, width: 22, height: 18, rx: 5, fill: "rgba(0,0,0,0.25)" }, fb);
+    const ft = el("text", { x: W - 15, y: 17, "text-anchor": "middle", "class": "flip-glyph" }, fb);
+    ft.textContent = "\u21c4";
+    const ftt = el("title", {}, fb);
+    ftt.textContent = "Swap input/output sides";
 
     const dims = el("text", { "class": "dims", x: 10, y: H - 6 }, g);
     dims.textContent = AV.deviceDims(dev);
@@ -19004,7 +19529,7 @@ AV.canvas = (function () {
     if (!a || !b) return;
     const sel = AV.state.selection;
     const selected = sel && sel.kind === "cable" && sel.id === cable.id;
-    const d = wirePath(a, b);
+    const d = wirePath(a, b, info.nFrom.flip ? -1 : 1, info.nTo.flip ? 1 : -1);
     el("path", { "class": "wire-hit", d, "data-id": cable.id }, wiresLayer);
     el("path", {
       "class": "wire" + (selected ? " selected" : ""),
@@ -19147,7 +19672,8 @@ AV.canvas = (function () {
     const dev = AV.effectiveDevice(node);
     const port = AV.findPort(dev, portId);
     const start = portWorldPos(node, portId);
-    mode = { type: "wire", nodeId, portId, dir, port, start };
+    const startExit = (dir === "out") !== !!node.flip ? 1 : -1;
+    mode = { type: "wire", nodeId, portId, dir, port, start, startExit };
     const preview = el("path", {
       "class": "wire-preview", d: "",
       stroke: AV.SIGNALS[port.signal].color,
@@ -19206,6 +19732,18 @@ AV.canvas = (function () {
       }
       beginWire(nodeId, portId, dot.getAttribute("data-dir"));
       try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
+      return;
+    }
+    const fbtn = e.target.closest(".flip-btn");
+    if (fbtn && e.button === 0) {
+      const node = AV.getNode(fbtn.getAttribute("data-id"));
+      if (node) {
+        AV.pushUndo();
+        node.flip = !node.flip;
+        if (!node.flip) delete node.flip;
+        AV.state.selection = { kind: "node", id: node.id };
+        AV.afterMutate();
+      }
       return;
     }
     const handle = e.target.closest(".resize-grip");
@@ -19293,7 +19831,9 @@ AV.canvas = (function () {
     } else if (mode.type === "wire") {
       const w = clientToWorld(e.clientX, e.clientY);
       mode.preview.setAttribute("d",
-        mode.dir === "out" ? wirePath(mode.start, w) : wirePath(w, mode.start));
+        mode.dir === "out"
+          ? wirePath(mode.start, w, mode.startExit, w.x > mode.start.x ? -1 : 1)
+          : wirePath(w, mode.start, w.x < mode.start.x ? 1 : -1, mode.startExit));
     }
   }
 
@@ -19392,6 +19932,71 @@ AV.canvas = (function () {
     }
   }
 
+  /* ---------- PNG export ---------- */
+
+  function collectCss() {
+    let css = "";
+    for (const sheet of document.styleSheets) {
+      try {
+        for (const rule of sheet.cssRules) css += rule.cssText + "\n";
+      } catch (e) { /* cross-origin sheet, skip */ }
+    }
+    return css;
+  }
+
+  function exportPNG() {
+    const nodes = AV.state.project.nodes;
+    if (!nodes.length) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    nodes.forEach(n => {
+      const dev = AV.effectiveDevice(n);
+      const h = dev ? nodeHeight(n, dev) : 100;
+      const s = n.scale || 1;
+      x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
+      x1 = Math.max(x1, n.x + nodeW(n) * s); y1 = Math.max(y1, n.y + h * s);
+    });
+    const m = 40;
+    const w = x1 - x0 + m * 2, h = y1 - y0 + m * 2;
+    // high-DPI: 4x of world pixels, backed off only when the raster would
+    // exceed safe browser canvas limits (dimension or total pixel count)
+    const scale = Math.min(4, 12000 / Math.max(w, h), Math.sqrt(40e6 / (w * h)));
+    const pxW = Math.round(w * scale), pxH = Math.round(h * scale);
+
+    const ex = document.createElementNS(SVGNS, "svg");
+    ex.setAttribute("xmlns", SVGNS);
+    ex.setAttribute("viewBox", (x0 - m) + " " + (y0 - m) + " " + w + " " + h);
+    ex.setAttribute("width", pxW);
+    ex.setAttribute("height", pxH);
+    ex.setAttribute("style", "font-family:'Avenir Next','Avenir','Helvetica Neue',Helvetica,sans-serif");
+    const style = document.createElementNS(SVGNS, "style");
+    style.textContent = collectCss();
+    ex.appendChild(style);
+    el("rect", { x: x0 - m, y: y0 - m, width: w, height: h, fill: "#131519" }, ex);
+    const wires = wiresLayer.cloneNode(true);
+    const nodesL = nodesLayer.cloneNode(true);
+    nodesL.querySelectorAll(".resize-grip").forEach(g => g.remove());
+    nodesL.querySelectorAll(".flip-btn").forEach(g => g.remove());
+    nodesL.querySelectorAll(".node.selected").forEach(n => n.classList.remove("selected"));
+    wires.querySelectorAll(".wire.selected").forEach(n => n.classList.remove("selected"));
+    ex.appendChild(wires);
+    ex.appendChild(nodesL);
+
+    const xml = new XMLSerializer().serializeToString(ex);
+    const url = URL.createObjectURL(new Blob([xml], { type: "image/svg+xml" }));
+    const img = new Image();
+    img.onload = () => {
+      const cv = document.createElement("canvas");
+      cv.width = pxW; cv.height = pxH;
+      cv.getContext("2d").drawImage(img, 0, 0, pxW, pxH);
+      URL.revokeObjectURL(url);
+      cv.toBlob(b => {
+        if (b) AV.lists.download(AV.slug(AV.state.project.name || "diagram") + ".png", b, "image/png");
+      }, "image/png");
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  }
+
   /* ---------- drop from library (HTML5 DnD) ---------- */
 
   function onDragOver(e) {
@@ -19448,7 +20053,7 @@ AV.canvas = (function () {
     render();
   }
 
-  return { init, render, zoomFit, clientToWorld, portWorldPos, placeDevice, NODE_W };
+  return { init, render, zoomFit, clientToWorld, portWorldPos, placeDevice, exportPNG, NODE_W };
 })();
 
 
@@ -19894,7 +20499,7 @@ AV.ai = (function () {
     '  "id": "<kebab-case manufacturer-model>",',
     '  "manufacturer": "<string>",',
     '  "model": "<string>",',
-    '  "category": "<one of: Video Processing | Video Switching | Cameras | LED | Audio | Converters | Network | Power | Playback | Displays | Other>",',
+    '  "category": "<one of: Video Processing | Video Switching | Cameras | LED | Audio | Converters | Network | Power | Playback | Displays | Cabling | Other>",',
     '  "tags": ["lowercase", "keywords"],',
     '  "physical": { "width_mm": 0, "depth_mm": 0, "height_mm": 0, "ru": 0, "weight_kg": 0, "power_w": 0, "power_connector": "" },',
     '  "ports": [',
@@ -20212,9 +20817,47 @@ window.AV = window.AV || {};
       if (e.target.files[0]) openProjectFile(e.target.files[0]);
       e.target.value = "";
     });
+    $("btnPNG").addEventListener("click", () => AV.canvas.exportPNG());
     $("btnUndo").addEventListener("click", AV.undo);
     $("btnRedo").addEventListener("click", AV.redo);
     $("btnZoomFit").addEventListener("click", AV.canvas.zoomFit);
+  }
+
+  /* Draggable splitter for a side panel. side: "left" panel grows to the
+     right of its own left edge; "right" panel grows to the left of its
+     own right edge. Width persists in settings under key. */
+  function makeResizer(resizerId, panelId, key, side, min, max, dflt) {
+    const panel = document.getElementById(panelId);
+    const rz = document.getElementById(resizerId);
+    const w = Number(AV.state.settings[key]);
+    if (w >= min && w <= max) panel.style.width = w + "px";
+    let dragging = false;
+    rz.addEventListener("pointerdown", e => {
+      dragging = true;
+      rz.classList.add("dragging");
+      try { rz.setPointerCapture(e.pointerId); } catch (err) { /* synthetic */ }
+      e.preventDefault();
+    });
+    rz.addEventListener("pointermove", e => {
+      if (!dragging) return;
+      const r = panel.getBoundingClientRect();
+      const raw = side === "left" ? e.clientX - r.left : r.right - e.clientX;
+      panel.style.width = Math.min(max, Math.max(min, Math.round(raw))) + "px";
+    });
+    const stop = () => {
+      if (!dragging) return;
+      dragging = false;
+      rz.classList.remove("dragging");
+      AV.state.settings[key] = parseInt(panel.style.width, 10) || dflt;
+      AV.saveSettings();
+    };
+    rz.addEventListener("pointerup", stop);
+    rz.addEventListener("pointercancel", stop);
+  }
+
+  function initLibResizer() {
+    makeResizer("libResizer", "library", "libWidth", "left", 180, 520, 250);
+    makeResizer("inspResizer", "inspector", "inspWidth", "right", 200, 520, 260);
   }
 
   function initSettings() {
@@ -20255,6 +20898,7 @@ window.AV = window.AV || {};
     AV.lists.init();
     AV.ai.init();
     initToolbar();
+    initLibResizer();
     initSettings();
     syncToolbar();
     if (AV.state.project.nodes.length) {
