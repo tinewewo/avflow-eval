@@ -1,5 +1,7 @@
 # AVFlow — evaluation build
 
+passcode: AVFLOW-MBEN-85JD
+
 Node-based AV system planner (evaluation build). An access key from the author
 is required; the build expires on 2026-09-27.
 
