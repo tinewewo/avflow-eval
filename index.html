@@ -199,6 +199,7 @@ aside {
 .node .title { fill: #fff; font-weight: 600; font-size: 13px; }
 .node .subtitle { fill: rgba(255,255,255,0.55); font-size: 10.5px; }
 .node .dims { fill: rgba(255,255,255,0.4); font-size: 9.5px; font-family: var(--mono); }
+.node .node-ip { fill: #7fb3f9; font-size: 9.5px; font-family: var(--mono); }
 .node .port-label { fill: var(--text); font-size: 10px; cursor: text; }
 .resize-grip { cursor: nwse-resize; }
 .flip-btn { cursor: pointer; }
@@ -213,6 +214,13 @@ aside {
 .wire-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: pointer; }
 .wire-preview { fill: none; stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
 .wire-warn { font-size: 10px; fill: var(--warn); }
+.marquee {
+  fill: rgba(59,130,246,0.08);
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
 
 /* port tooltip + inline rename */
 #tooltip {
@@ -505,7 +513,7 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
 /* evaluation-build access gate */
 (function () {
   "use strict";
-  var LIC = {"salt": "1691170f37b393b1", "hash": "4858d2123acf16f9f52305c74d9c145102af1145a6bbe4884183f71f43d3ae4c", "expires": "2026-10-27"};
+  var LIC = {"salt": "64e0cc6c12acf508", "hash": "98254eb1cfb73767effb7d23ea6c6d74ad733c007eb9751cc431725cd0a07d0c", "expires": "2026-10-27"};
   function now() {
     var t = Date.now();
     try {
@@ -938,6 +946,17 @@ AV.normalizeDevice = function (raw) {
 AV.portName = function (node, port) {
   if (node && node.portAliases && node.portAliases[port.id]) return node.portAliases[port.id];
   return port.label;
+};
+
+// True when the device can actually hold an IP address: a real network
+// port or ethernet-based control. Bare RJ45/etherCON data ports (LED data,
+// passive trunks) do not count.
+AV.deviceHasNetwork = function (dev) {
+  if (!dev || dev.category === "Cabling") return false;
+  const ex = AV.expandPorts(dev);
+  return ex.in.concat(ex.out).some(p =>
+    AV.portSignals(p).includes("network") ||
+    (p.signal === "control" && /ethernet|\b1g\b|\b10g\b/i.test(p.standard)));
 };
 
 // True when the node instance was customized by the user (renamed ports).
@@ -18967,19 +18986,25 @@ AV.addNode = function (deviceId, x, y, extra) {
   };
   if (extra) Object.assign(node, extra);
   p.nodes.push(node);
-  AV.state.selection = { kind: "node", id: node.id };
+  AV.state.selection = { kind: "node", ids: [node.id] };
   AV.afterMutate();
   return node;
 };
 
-AV.deleteNode = function (nodeId) {
+AV.deleteNodes = function (nodeIds) {
+  const ids = Array.isArray(nodeIds) ? nodeIds : [nodeIds];
   const p = AV.state.project;
   AV.pushUndo();
-  p.cables = p.cables.filter(c => c.from.node !== nodeId && c.to.node !== nodeId);
-  p.nodes = p.nodes.filter(n => n.id !== nodeId);
-  if (AV.state.selection && AV.state.selection.id === nodeId) AV.state.selection = null;
+  p.cables = p.cables.filter(c => !ids.includes(c.from.node) && !ids.includes(c.to.node));
+  p.nodes = p.nodes.filter(n => !ids.includes(n.id));
+  const sel = AV.state.selection;
+  if (sel && sel.kind === "node") {
+    const left = sel.ids.filter(id => !ids.includes(id));
+    AV.state.selection = left.length ? { kind: "node", ids: left } : null;
+  }
   AV.afterMutate();
 };
+AV.deleteNode = function (nodeId) { AV.deleteNodes([nodeId]); };
 
 AV.portOccupied = function (nodeId, portId) {
   return AV.state.project.cables.some(c =>
@@ -19627,7 +19652,8 @@ AV.canvas = (function () {
   function nodeHeight(node, dev) {
     const ex = AV.expandPorts(dev);
     const rows = Math.max(ex.in.length, ex.out.length, 1);
-    return HEAD_H + PAD_TOP + rows * rowH(node) + FOOT_H + 4;
+    const ipLine = node && node.ip ? 13 : 0;
+    return HEAD_H + PAD_TOP + rows * rowH(node) + FOOT_H + ipLine + 4;
   }
 
   // port position in node-local (unscaled) coords (flip swaps the sides)
@@ -19678,7 +19704,7 @@ AV.canvas = (function () {
     if (!dev) return;
     const sel = AV.state.selection;
     const g = el("g", {
-      "class": "node" + (sel && sel.kind === "node" && sel.id === node.id ? " selected" : ""),
+      "class": "node" + (sel && sel.kind === "node" && sel.ids.includes(node.id) ? " selected" : ""),
       "data-id": node.id,
       transform: "translate(" + node.x + "," + node.y + ") scale(" + (node.scale || 1) + ")",
     }, nodesLayer);
@@ -19726,6 +19752,10 @@ AV.canvas = (function () {
     const ftt = el("title", {}, fb);
     ftt.textContent = "Swap input/output sides";
 
+    if (node.ip) {
+      const ipT = el("text", { "class": "node-ip", x: 10, y: H - 19 }, g);
+      ipT.textContent = "IP " + node.ip;
+    }
     const dims = el("text", { "class": "dims", x: 10, y: H - 6 }, g);
     dims.textContent = AV.deviceDims(dev);
 
@@ -19961,7 +19991,7 @@ AV.canvas = (function () {
         AV.pushUndo();
         node.flip = !node.flip;
         if (!node.flip) delete node.flip;
-        AV.state.selection = { kind: "node", id: node.id };
+        AV.state.selection = { kind: "node", ids: [node.id] };
         AV.afterMutate();
       }
       return;
@@ -19978,7 +20008,7 @@ AV.canvas = (function () {
         moved: false,
         snapshot: JSON.stringify(AV.state.project),
       };
-      AV.state.selection = { kind: "node", id };
+      AV.state.selection = { kind: "node", ids: [id] };
       lastClient = { x: e.clientX, y: e.clientY };
       startEdgePan();
       try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
@@ -19994,12 +20024,26 @@ AV.canvas = (function () {
     const nodeEl = e.target.closest(".node");
     if (nodeEl && e.button === 0) {
       const id = nodeEl.getAttribute("data-id");
+      const sel = AV.state.selection;
+      const selIds = sel && sel.kind === "node" ? sel.ids : [];
+      if (e.shiftKey) {
+        // shift-click toggles membership, no drag
+        const ids = selIds.includes(id) ? selIds.filter(x => x !== id) : selIds.concat([id]);
+        AV.state.selection = ids.length ? { kind: "node", ids } : null;
+        AV.afterMutate();
+        return;
+      }
+      // grabbing a member of the current selection moves the whole group
+      const ids = selIds.includes(id) ? selIds : [id];
+      AV.state.selection = { kind: "node", ids };
       const node = AV.getNode(id);
-      AV.state.selection = { kind: "node", id };
       const w = clientToWorld(e.clientX, e.clientY);
+      const orig = {};
+      ids.forEach(i => { const n = AV.getNode(i); if (n) orig[i] = { x: n.x, y: n.y }; });
       mode = {
-        type: "node", id,
+        type: "node", ids, grabbed: id,
         offX: w.x - node.x, offY: w.y - node.y,
+        orig,
         moved: false,
         snapshot: JSON.stringify(AV.state.project),
       };
@@ -20007,6 +20051,16 @@ AV.canvas = (function () {
       startEdgePan();
       try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
       AV.afterMutate();
+      return;
+    }
+    if (e.shiftKey) {
+      // shift-drag on empty canvas: marquee selection
+      const w = clientToWorld(e.clientX, e.clientY);
+      const rect = el("rect", { "class": "marquee", x: w.x, y: w.y, width: 0, height: 0 }, overlayLayer);
+      mode = { type: "marquee", start: w, rect };
+      lastClient = { x: e.clientX, y: e.clientY };
+      startEdgePan();
+      try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
       return;
     }
     // empty canvas: pan (or deselect on plain click)
@@ -20021,15 +20075,29 @@ AV.canvas = (function () {
     if (!mode) return;
     if (mode.type === "node") {
       const w = clientToWorld(cx, cy);
-      const node = AV.getNode(mode.id);
-      if (!node) return;
+      const grabbed = AV.getNode(mode.grabbed);
+      if (!grabbed) return;
+      const o = mode.orig[mode.grabbed];
       const nx = Math.round((w.x - mode.offX) / 10) * 10;
       const ny = Math.round((w.y - mode.offY) / 10) * 10;
-      if (nx !== node.x || ny !== node.y) {
-        node.x = nx; node.y = ny;
+      const dx = nx - o.x, dy = ny - o.y;
+      if (grabbed.x !== nx || grabbed.y !== ny) {
+        mode.ids.forEach(i => {
+          const n = AV.getNode(i);
+          const oi = mode.orig[i];
+          if (n && oi) { n.x = oi.x + dx; n.y = oi.y + dy; }
+        });
         mode.moved = true;
         render();
       }
+    } else if (mode.type === "marquee") {
+      const w = clientToWorld(cx, cy);
+      const x = Math.min(mode.start.x, w.x), y = Math.min(mode.start.y, w.y);
+      mode.rect.setAttribute("x", x);
+      mode.rect.setAttribute("y", y);
+      mode.rect.setAttribute("width", Math.abs(w.x - mode.start.x));
+      mode.rect.setAttribute("height", Math.abs(w.y - mode.start.y));
+      mode.end = w;
     } else if (mode.type === "resize") {
       const node = AV.getNode(mode.id);
       if (!node) return;
@@ -20124,6 +20192,21 @@ AV.canvas = (function () {
     } else if (mode.type === "node" || mode.type === "resize") {
       if (mode.moved) commitDragUndo();
       mode = null;
+    } else if (mode.type === "marquee") {
+      const a = mode.start, b = mode.end || mode.start;
+      const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+      const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+      mode.rect.remove();
+      const ids = AV.state.project.nodes.filter(n => {
+        const dev = AV.effectiveDevice(n);
+        if (!dev) return false;
+        const sc = n.scale || 1;
+        const nx1 = n.x + nodeW(n) * sc, ny1 = n.y + nodeHeight(n, dev) * sc;
+        return n.x < x1 && nx1 > x0 && n.y < y1 && ny1 > y0;
+      }).map(n => n.id);
+      AV.state.selection = ids.length ? { kind: "node", ids } : null;
+      mode = null;
+      AV.afterMutate();
     } else if (mode.type === "wire") {
       // pointer capture means e.target is the svg: hit-test manually
       const elUnder = document.elementFromPoint(e.clientX, e.clientY);
@@ -20193,7 +20276,7 @@ AV.canvas = (function () {
     if ((e.key === "Delete" || e.key === "Backspace") && AV.state.selection) {
       e.preventDefault();
       const sel = AV.state.selection;
-      if (sel.kind === "node") AV.deleteNode(sel.id);
+      if (sel.kind === "node") AV.deleteNodes(sel.ids);
       else AV.deleteCable(sel.id);
     } else if (e.key === "Escape") {
       if (mode && mode.type === "wire") { stopEdgePan(); endWire(null); }
@@ -20356,8 +20439,29 @@ AV.inspector = (function () {
     return d;
   }
 
+  function renderMulti(ids) {
+    const nodes = ids.map(AV.getNode).filter(Boolean);
+    const head = document.createElement("div");
+    head.className = "insp-kv";
+    head.textContent = nodes.length + " nodes selected";
+    body.appendChild(head);
+    let ru = 0, kg = 0, w = 0;
+    nodes.forEach(n => {
+      const p = (AV.effectiveDevice(n) || {}).physical || {};
+      ru += p.ru || 0; kg += p.weight_kg || 0; w += p.power_w || 0;
+    });
+    body.appendChild(row("Combined", kv(
+      (ru ? ru + "RU · " : "") + (+kg.toFixed(1)) + " kg · " + w + " W")));
+    const del = document.createElement("button");
+    del.className = "danger";
+    del.textContent = "Delete " + nodes.length + " nodes";
+    del.addEventListener("click", () => AV.deleteNodes(nodes.map(n => n.id)));
+    body.appendChild(del);
+  }
+
   function renderNode(sel) {
-    const node = AV.getNode(sel.id);
+    if (sel.ids.length > 1) return renderMulti(sel.ids);
+    const node = AV.getNode(sel.ids[0]);
     if (!node) return empty();
     const baseDev = AV.getDevice(node.deviceId);
     const dev = AV.effectiveDevice(node);
@@ -20374,6 +20478,23 @@ AV.inspector = (function () {
     body.appendChild(row("Instance name", nameIn));
 
     body.appendChild(row("Device", kv(dev.manufacturer + " " + dev.model + "\n" + dev.category)));
+
+    // instance IP address (only for devices with a network-capable port),
+    // shown above the physical data per the user's layout preference
+    if (AV.deviceHasNetwork(dev)) {
+      const ipIn = document.createElement("input");
+      ipIn.placeholder = "e.g. 192.168.1.10";
+      ipIn.spellcheck = false;
+      ipIn.classList.add("mono");
+      if (node.ip) ipIn.value = node.ip;
+      ipIn.addEventListener("change", () => {
+        AV.pushUndo();
+        const v = ipIn.value.trim();
+        if (v) node.ip = v; else delete node.ip;
+        AV.afterMutate();
+      });
+      body.appendChild(row("IP address", ipIn));
+    }
     const dims = AV.deviceDims(dev);
     if (dims) body.appendChild(row("Physical", kv(dims)));
 
@@ -20576,18 +20697,21 @@ AV.lists = (function () {
     AV.state.project.nodes.forEach(n => {
       const dev = AV.getDevice(n.deviceId);
       if (!dev) return;
-      if (!byDev.has(dev.id)) byDev.set(dev.id, { dev, count: 0 });
-      byDev.get(dev.id).count++;
+      if (!byDev.has(dev.id)) byDev.set(dev.id, { dev, count: 0, ips: [] });
+      const e = byDev.get(dev.id);
+      e.count++;
+      if (n.ip) e.ips.push(n.ip);
     });
     const rows = [...byDev.values()]
       .sort((a, b) => (a.dev.category + a.dev.model).localeCompare(b.dev.category + b.dev.model))
-      .map(({ dev, count }) => {
+      .map(({ dev, count, ips }) => {
         const p = dev.physical || {};
         return [
           dev.category,
           dev.manufacturer,
           dev.model,
           count,
+          ips.join(", "),
           p.width_mm && p.depth_mm && p.height_mm ? p.width_mm + "×" + p.depth_mm + "×" + p.height_mm : "",
           p.ru ? p.ru * count : "",
           p.weight_kg ? +(p.weight_kg * count).toFixed(1) : "",
@@ -20604,10 +20728,10 @@ AV.lists = (function () {
     });
     return {
       title: "Hardware list",
-      headers: ["Category", "Manufacturer", "Model", "Qty", "Dims mm", "RU", "kg", "W"],
-      numCols: [3, 5, 6, 7],
+      headers: ["Category", "Manufacturer", "Model", "Qty", "IP", "Dims mm", "RU", "kg", "W"],
+      numCols: [3, 6, 7, 8],
       rows,
-      totals: ["Total", "", "", cnt, "", ru || "", kg ? +kg.toFixed(1) : "", w || ""],
+      totals: ["Total", "", "", cnt, "", "", ru || "", kg ? +kg.toFixed(1) : "", w || ""],
     };
   }
 
