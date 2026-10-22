@@ -200,6 +200,7 @@ aside {
 .node .subtitle { fill: rgba(255,255,255,0.55); font-size: 10.5px; }
 .node .dims { fill: rgba(255,255,255,0.4); font-size: 9.5px; font-family: var(--mono); }
 .node .node-ip { fill: #7fb3f9; font-size: 9.5px; font-family: var(--mono); }
+.node .node-comment { fill: rgba(255,255,255,0.78); font-size: 10px; font-style: italic; }
 .node .port-label { fill: var(--text); font-size: 10px; cursor: text; }
 .resize-grip { cursor: nwse-resize; }
 .flip-btn { cursor: pointer; }
@@ -292,7 +293,9 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
 .dlg-buttons .left { margin-right: auto; }
 .dev-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .ports-head { display: flex; justify-content: space-between; align-items: center; color: var(--text-dim); font-size: 12px; }
-.port-row { display: grid; grid-template-columns: 58px 1fr 1fr 1fr 74px 52px 26px; gap: 5px; margin-bottom: 5px; align-items: center; }
+.port-row { display: grid; grid-template-columns: 58px 1fr 1fr 1fr 74px 44px 18px 18px 22px; gap: 5px; margin-bottom: 5px; align-items: center; }
+.port-row .mv { background: transparent; border: none; color: var(--text-dim); font-size: 13px; padding: 0; cursor: pointer; }
+.port-row .mv:hover { color: var(--text); }
 .port-row input, .port-row select { width: 100%; padding: 4px 6px; font-size: 12px; }
 .port-row .rm { color: var(--danger); background: transparent; border: none; font-size: 15px; padding: 0; }
 .rawjson summary { cursor: pointer; color: var(--text-dim); font-size: 12px; }
@@ -326,6 +329,16 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #333845; border-radius: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+.wp-dot {
+  fill: var(--panel2);
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  cursor: grab;
+}
+.wp-dot:hover { fill: var(--accent); }
+.insp-check { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.insp-check input { accent-color: var(--accent); }
 
 </style>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -513,7 +526,7 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
 /* evaluation-build access gate */
 (function () {
   "use strict";
-  var LIC = {"salt": "64e0cc6c12acf508", "hash": "98254eb1cfb73767effb7d23ea6c6d74ad733c007eb9751cc431725cd0a07d0c", "expires": "2026-10-27"};
+  var LIC = {"salt": "a86a69eb47b0b4d1", "hash": "c4579dc400b06a35bdb8a754ef8f8ef366565cc0aff6c4e8d8c3bd9f49c3089b", "expires": "2026-10-27"};
   function now() {
     var t = Date.now();
     try {
@@ -19064,6 +19077,42 @@ AV.cableInfo = function (cable) {
   };
 };
 
+/* Duplicate nodes (and the cables fully inside the set) with an offset.
+   Instance IPs are dropped — a new physical unit gets its own address. */
+AV.duplicateNodes = function (ids, offset) {
+  const p = AV.state.project;
+  AV.pushUndo();
+  const map = {};
+  const newNodes = [];
+  ids.forEach(id => {
+    const n = AV.getNode(id);
+    if (!n) return;
+    const c = JSON.parse(JSON.stringify(n));
+    c.id = AV.uid("n");
+    delete c.ip;
+    c.x += offset; c.y += offset;
+    map[id] = c.id;
+    newNodes.push(c);
+  });
+  if (!newNodes.length) { AV.state.undoStack.pop(); return []; }
+  p.nodes.push(...newNodes);
+  const newCables = [];
+  p.cables.forEach(cb => {
+    if (map[cb.from.node] && map[cb.to.node]) {
+      const cc = JSON.parse(JSON.stringify(cb));
+      cc.id = AV.uid("c");
+      cc.from.node = map[cb.from.node];
+      cc.to.node = map[cb.to.node];
+      if (cc.waypoints) cc.waypoints = cc.waypoints.map(w => ({ x: w.x + offset, y: w.y + offset }));
+      newCables.push(cc);
+    }
+  });
+  p.cables.push(...newCables);
+  AV.state.selection = { kind: "node", ids: newNodes.map(n => n.id) };
+  AV.afterMutate();
+  return newNodes.map(n => n.id);
+};
+
 /* Re-apply a card selection to an existing node; prunes orphaned cables. */
 AV.reconfigureNode = function (nodeId, cards) {
   const node = AV.getNode(nodeId);
@@ -19092,22 +19141,40 @@ AV.reconfigureNode = function (nodeId, cards) {
 AV.upsertDevice = function (device) {
   const lib = AV.state.library;
   const i = lib.findIndex(d => d.id === device.id);
+  const oldDef = i >= 0 ? lib[i] : null;
   if (i >= 0) lib[i] = device; else lib.push(device);
   AV.saveLibrary();
-  // drop cables whose ports no longer exist after a device edit
-  // (nodes with a card-config portsOverride keep their own ports)
+  // After a device edit, port ids are positional, so reordered groups would
+  // silently rebind cables. Remap each affected cable endpoint to the port
+  // with the SAME signature (group label + connector + signal + direction and
+  // the same index inside the group); drop the cable when no match remains.
+  // Nodes with a card-config portsOverride keep their own ports.
   const p = AV.state.project;
-  const nodes = p.nodes.filter(n => n.deviceId === device.id);
-  if (nodes.length) {
+  const nodes = p.nodes.filter(n => n.deviceId === device.id && !n.portsOverride);
+  if (nodes.length && oldDef) {
+    const nodeIds = new Set(nodes.map(n => n.id));
+    const newEx = AV.expandPorts(device);
+    const newAll = newEx.in.concat(newEx.out);
+    const remap = (end) => {
+      if (!nodeIds.has(end.node)) return true;
+      const oldPort = AV.findPort(oldDef, end.port);
+      const samePos = AV.findPort(device, end.port);
+      const sig = pp => pp && [pp.groupLabel, pp.connector, pp.signal, pp.id.split(":")[0]].join("|");
+      if (oldPort && samePos && sig(oldPort) === sig(samePos)) return true;
+      if (!oldPort) return !!samePos; // nothing to compare against, keep if it resolves
+      const intra = end.port.split(":")[2];
+      const cand = newAll.find(pp => sig(pp) === sig(oldPort) && pp.id.split(":")[2] === intra);
+      if (cand) { end.port = cand.id; return true; }
+      return false;
+    };
     const before = p.cables.length;
+    let changed = false;
     p.cables = p.cables.filter(c => {
-      for (const end of [c.from, c.to]) {
-        const n = nodes.find(n => n.id === end.node);
-        if (n && !AV.findPort(AV.effectiveDevice(n), end.port)) return false;
-      }
-      return true;
+      const okF = remap(c.from), okT = okF && remap(c.to);
+      changed = true;
+      return okF && okT;
     });
-    if (p.cables.length !== before) AV.saveProject();
+    if (changed || p.cables.length !== before) AV.saveProject();
   }
   if (AV.libraryUI) AV.libraryUI.render();
   if (AV.canvas) AV.canvas.render(); // device edits may change nodes on canvas
@@ -19397,10 +19464,24 @@ AV.libraryUI = (function () {
     const count = document.createElement("input");
     count.type = "number"; count.min = 1; count.max = 64;
     count.value = g.count || 1;
+    const up = document.createElement("button");
+    up.type = "button"; up.className = "mv"; up.textContent = "\u25b4";
+    up.title = "Move up";
+    up.addEventListener("click", () => {
+      const prev = row.previousElementSibling;
+      if (prev) row.parentElement.insertBefore(row, prev);
+    });
+    const dn = document.createElement("button");
+    dn.type = "button"; dn.className = "mv"; dn.textContent = "\u25be";
+    dn.title = "Move down";
+    dn.addEventListener("click", () => {
+      const next = row.nextElementSibling;
+      if (next) row.parentElement.insertBefore(next, row);
+    });
     const rm = document.createElement("button");
     rm.type = "button"; rm.className = "rm"; rm.textContent = "×";
     rm.addEventListener("click", () => row.remove());
-    [dir, label, conn, std, sig, count, rm].forEach(x => row.appendChild(x));
+    [dir, label, conn, std, sig, count, up, dn, rm].forEach(x => row.appendChild(x));
     row._get = () => {
       const out = {
         dir: dir.value, label: label.value.trim() || "Port",
@@ -19622,7 +19703,9 @@ AV.canvas = (function () {
   let panX = 60, panY = 60, zoom = 1;
 
   // interaction state
-  let mode = null; // null | {type:"pan"|"node"|"wire"|"resize", ...}
+  let mode = null; // null | {type:"pan"|"node"|"wire"|"resize"|"wp"|"wp-new"|"marquee", ...}
+  let copiedIds = null; // node ids captured by Cmd/Ctrl+C
+  let pasteCount = 0;
 
   // tooltip state
   let hoverTimer = null;
@@ -19645,6 +19728,9 @@ AV.canvas = (function () {
   function nodeW(node) {
     return node && node.w ? node.w : NODE_W;
   }
+  function headH(node) {
+    return HEAD_H + (node && node.comment && node.showComment ? 13 : 0);
+  }
   function rowH(node) {
     return ROW_H * (node && node.rowScale ? node.rowScale : 1);
   }
@@ -19653,7 +19739,7 @@ AV.canvas = (function () {
     const ex = AV.expandPorts(dev);
     const rows = Math.max(ex.in.length, ex.out.length, 1);
     const ipLine = node && node.ip ? 13 : 0;
-    return HEAD_H + PAD_TOP + rows * rowH(node) + FOOT_H + ipLine + 4;
+    return headH(node) + PAD_TOP + rows * rowH(node) + FOOT_H + ipLine + 4;
   }
 
   // port position in node-local (unscaled) coords (flip swaps the sides)
@@ -19664,7 +19750,7 @@ AV.canvas = (function () {
     let i = list.findIndex(p => p.id === portId);
     if (i < 0) { list = ex.out; x = flip ? 0 : nodeW(node); i = list.findIndex(p => p.id === portId); }
     if (i < 0) return null;
-    return { x, y: HEAD_H + PAD_TOP + i * rowH(node) + rowH(node) / 2 };
+    return { x, y: headH(node) + PAD_TOP + i * rowH(node) + rowH(node) / 2 };
   }
 
   // port position in world coords
@@ -19711,23 +19797,28 @@ AV.canvas = (function () {
 
     const W = nodeW(node);
     const H = nodeHeight(node, dev);
+    const HH = headH(node);
     const RH = rowH(node);
     const color = node.color || AV.CATEGORY_COLORS[dev.category] || "#5f6672";
     el("rect", { "class": "body", width: W, height: H, rx: 10 }, g);
     // header band (clip bottom corners with a second rect)
-    el("rect", { "class": "head-band", width: W, height: HEAD_H, rx: 10, fill: color }, g);
-    el("rect", { width: W, height: 12, y: HEAD_H - 12, fill: color }, g);
+    el("rect", { "class": "head-band", width: W, height: HH, rx: 10, fill: color }, g);
+    el("rect", { width: W, height: 12, y: HH - 12, fill: color }, g);
 
     const title = el("text", { "class": "title", x: 10, y: 18 }, g);
     title.textContent = (AV.nodeModified(node) ? "Δ " : "") + truncate(node.label || dev.model, Math.floor((W - 32) / 8.5));
     const sub = el("text", { "class": "subtitle", x: 10, y: 33 }, g);
     sub.textContent = truncate(dev.manufacturer + " " + dev.model, Math.floor(W / 6.2));
+    if (node.comment && node.showComment) {
+      const cm = el("text", { "class": "node-comment", x: 10, y: 47 }, g);
+      cm.textContent = truncate(node.comment, Math.floor(W / 5.4));
+    }
 
     const maxChars = Math.floor((W / 2 - 16) / 5.8);
     const flip = !!node.flip;
     const ex = AV.expandPorts(dev);
     const portRow = (p, i, isIn) => {
-      const y = HEAD_H + PAD_TOP + i * RH + RH / 2;
+      const y = HH + PAD_TOP + i * RH + RH / 2;
       const onLeft = isIn !== flip; // inputs left normally, right when flipped
       el("circle", {
         "class": "port-dot", cx: onLeft ? 0 : W, cy: y, r: 5,
@@ -19769,6 +19860,27 @@ AV.canvas = (function () {
     }, grip);
   }
 
+  // Catmull-Rom-ish smooth path through waypoints; endpoint tangents follow
+  // the port exit directions so the wire still leaves the node sideways.
+  function smoothPath(pts, sa, sb) {
+    let d = "M " + pts[0].x + " " + pts[0].y;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+      let c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+      let c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+      if (i === 0) { c1x = p1.x + 40 * sa; c1y = p1.y; }
+      if (i === pts.length - 2) { c2x = p2.x + 40 * sb; c2y = p2.y; }
+      d += " C " + c1x + " " + c1y + ", " + c2x + " " + c2y + ", " + p2.x + " " + p2.y;
+    }
+    return d;
+  }
+
+  function cablePath(cable, info, a, b) {
+    const sa = info.nFrom.flip ? -1 : 1, sb = info.nTo.flip ? 1 : -1;
+    const wps = cable.waypoints || [];
+    return wps.length ? smoothPath([a].concat(wps, [b]), sa, sb) : wirePath(a, b, sa, sb);
+  }
+
   function renderCable(cable) {
     const info = AV.cableInfo(cable);
     if (!info) return;
@@ -19777,7 +19889,7 @@ AV.canvas = (function () {
     if (!a || !b) return;
     const sel = AV.state.selection;
     const selected = sel && sel.kind === "cable" && sel.id === cable.id;
-    const d = wirePath(a, b, info.nFrom.flip ? -1 : 1, info.nTo.flip ? 1 : -1);
+    const d = cablePath(cable, info, a, b);
     el("path", { "class": "wire-hit", d, "data-id": cable.id }, wiresLayer);
     el("path", {
       "class": "wire" + (selected ? " selected" : ""),
@@ -19790,6 +19902,14 @@ AV.canvas = (function () {
       w.textContent = "⚠";
       const wt = el("title", {}, w);
       wt.textContent = cable.note;
+    }
+    if (selected && cable.waypoints) {
+      cable.waypoints.forEach((p, i) => {
+        el("circle", {
+          "class": "wp-dot", cx: p.x, cy: p.y, r: 4.5,
+          "data-cable": cable.id, "data-idx": i,
+        }, wiresLayer);
+      });
     }
   }
 
@@ -20015,9 +20135,34 @@ AV.canvas = (function () {
       AV.afterMutate();
       return;
     }
+    const wpd = e.target.closest(".wp-dot");
+    if (wpd && e.button === 0) {
+      mode = {
+        type: "wp", cableId: wpd.getAttribute("data-cable"),
+        index: Number(wpd.getAttribute("data-idx")),
+        moved: false,
+        snapshot: JSON.stringify(AV.state.project),
+      };
+      lastClient = { x: e.clientX, y: e.clientY };
+      startEdgePan();
+      try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
+      return;
+    }
     const wire = e.target.closest(".wire-hit, .wire");
     if (wire && e.button === 0) {
-      AV.state.selection = { kind: "cable", id: wire.getAttribute("data-id") };
+      const cid = wire.getAttribute("data-id");
+      AV.state.selection = { kind: "cable", id: cid };
+      // a plain click selects; dragging from here bends the route by
+      // inserting a new waypoint under the pointer
+      mode = {
+        type: "wp-new", cableId: cid,
+        startClient: { x: e.clientX, y: e.clientY },
+        placed: false, index: null, moved: false,
+        snapshot: JSON.stringify(AV.state.project),
+      };
+      lastClient = { x: e.clientX, y: e.clientY };
+      startEdgePan();
+      try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
       AV.afterMutate();
       return;
     }
@@ -20090,6 +20235,41 @@ AV.canvas = (function () {
         mode.moved = true;
         render();
       }
+    } else if (mode.type === "wp") {
+      const cable = AV.getCable(mode.cableId);
+      if (!cable || !cable.waypoints) return;
+      const w = clientToWorld(cx, cy);
+      cable.waypoints[mode.index] = { x: Math.round(w.x / 10) * 10, y: Math.round(w.y / 10) * 10 };
+      mode.moved = true;
+      render();
+    } else if (mode.type === "wp-new") {
+      const cable = AV.getCable(mode.cableId);
+      if (!cable) return;
+      if (!mode.placed) {
+        if (Math.hypot(cx - mode.startClient.x, cy - mode.startClient.y) < 5) return;
+        const info = AV.cableInfo(cable);
+        if (!info) return;
+        const a = portWorldPos(info.nFrom, cable.from.port);
+        const b = portWorldPos(info.nTo, cable.to.port);
+        const w0 = clientToWorld(mode.startClient.x, mode.startClient.y);
+        const pts = [a].concat(cable.waypoints || [], [b]);
+        // nearest segment decides where the new waypoint slots in
+        let best = 0, bestD = Infinity;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p = pts[i], q = pts[i + 1];
+          const L2 = (q.x - p.x) ** 2 + (q.y - p.y) ** 2 || 1;
+          const t = Math.max(0, Math.min(1, ((w0.x - p.x) * (q.x - p.x) + (w0.y - p.y) * (q.y - p.y)) / L2));
+          const dd = (w0.x - (p.x + t * (q.x - p.x))) ** 2 + (w0.y - (p.y + t * (q.y - p.y))) ** 2;
+          if (dd < bestD) { bestD = dd; best = i; }
+        }
+        if (!cable.waypoints) cable.waypoints = [];
+        cable.waypoints.splice(best, 0, { x: w0.x, y: w0.y });
+        mode.index = best;
+        mode.placed = true;
+      }
+      const w2 = clientToWorld(cx, cy);
+      cable.waypoints[mode.index] = { x: Math.round(w2.x / 10) * 10, y: Math.round(w2.y / 10) * 10 };
+      render();
     } else if (mode.type === "marquee") {
       const w = clientToWorld(cx, cy);
       const x = Math.min(mode.start.x, w.x), y = Math.min(mode.start.y, w.y);
@@ -20189,8 +20369,11 @@ AV.canvas = (function () {
     if (mode.type === "pan") {
       if (!mode.moved) { AV.state.selection = null; AV.afterMutate(); }
       mode = null;
-    } else if (mode.type === "node" || mode.type === "resize") {
+    } else if (mode.type === "node" || mode.type === "resize" || mode.type === "wp") {
       if (mode.moved) commitDragUndo();
+      mode = null;
+    } else if (mode.type === "wp-new") {
+      if (mode.placed) commitDragUndo();
       mode = null;
     } else if (mode.type === "marquee") {
       const a = mode.start, b = mode.end || mode.start;
@@ -20216,6 +20399,17 @@ AV.canvas = (function () {
   }
 
   function onDblClick(e) {
+    const wpd = e.target.closest && e.target.closest(".wp-dot");
+    if (wpd) {
+      const cable = AV.getCable(wpd.getAttribute("data-cable"));
+      if (cable && cable.waypoints) {
+        AV.pushUndo();
+        cable.waypoints.splice(Number(wpd.getAttribute("data-idx")), 1);
+        if (!cable.waypoints.length) delete cable.waypoints;
+        AV.afterMutate();
+      }
+      return;
+    }
     const label = e.target.closest && e.target.closest(".port-label");
     if (label && label.getAttribute("data-port")) {
       e.preventDefault();
@@ -20284,6 +20478,19 @@ AV.canvas = (function () {
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
       if (e.shiftKey) AV.redo(); else AV.undo();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") {
+      const sel = AV.state.selection;
+      if (sel && sel.kind === "node" && sel.ids.length) {
+        copiedIds = sel.ids.slice();
+        pasteCount = 0;
+        e.preventDefault();
+      }
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") {
+      if (copiedIds && copiedIds.length) {
+        pasteCount++;
+        AV.duplicateNodes(copiedIds, 40 * pasteCount);
+        e.preventDefault();
+      }
     }
   }
 
@@ -20331,6 +20538,7 @@ AV.canvas = (function () {
     const nodesL = nodesLayer.cloneNode(true);
     nodesL.querySelectorAll(".resize-grip").forEach(g => g.remove());
     nodesL.querySelectorAll(".flip-btn").forEach(g => g.remove());
+    wires.querySelectorAll(".wp-dot").forEach(g => g.remove());
     nodesL.querySelectorAll(".node.selected").forEach(n => n.classList.remove("selected"));
     wires.querySelectorAll(".wire.selected").forEach(n => n.classList.remove("selected"));
     ex.appendChild(wires);
@@ -20497,6 +20705,35 @@ AV.inspector = (function () {
     }
     const dims = AV.deviceDims(dev);
     if (dims) body.appendChild(row("Physical", kv(dims)));
+
+    // free-form comment, optionally shown in the node header
+    const cm = document.createElement("textarea");
+    cm.rows = 2;
+    cm.spellcheck = false;
+    cm.placeholder = "e.g. FOH rack, spare unit...";
+    if (node.comment) cm.value = node.comment;
+    cm.addEventListener("change", () => {
+      AV.pushUndo();
+      const v = cm.value.trim();
+      if (v) node.comment = v; else { delete node.comment; delete node.showComment; }
+      AV.afterMutate();
+    });
+    body.appendChild(row("Comment", cm));
+    if (node.comment) {
+      const wrap = document.createElement("label");
+      wrap.className = "insp-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!node.showComment;
+      cb.addEventListener("change", () => {
+        AV.pushUndo();
+        if (cb.checked) node.showComment = true; else delete node.showComment;
+        AV.afterMutate();
+      });
+      wrap.appendChild(cb);
+      wrap.appendChild(document.createTextNode(" Show comment on the node"));
+      body.appendChild(wrap);
+    }
 
     // sliders: overall scale, width, row spacing
     const slider = (labelText, min, max, step, get, set, fmt) => {
